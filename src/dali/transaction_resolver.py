@@ -143,11 +143,14 @@ def _update_spot_price_from_web(transaction: AbstractTransaction, global_configu
             global_configuration=global_configuration,
         )
         if conversion.rate is None:
-            raise RP2RuntimeError(
+            # Log the issue instead of raising an error
+            LOGGER.warning(
                 f"Spot price for {transaction.unique_id + ':' if transaction.unique_id else ''}"
                 f"{transaction.timestamp_value}:{transaction.asset}->{global_configuration[Keyword.NATIVE_FIAT.value]}"
-                " not found on any pair converter plugin"
+                " not found on any pair converter plugin. Using UNKNOWN value."
             )
+            # Keep the original spot price (UNKNOWN or ZERO)
+            return transaction
 
         notes: str = (
             f"{conversion.pair_converter.historical_price_type} spot_price read from {conversion.pair_converter.name()} "
@@ -184,7 +187,13 @@ def _convert_fiat_fields_to_native_fiat(transaction: AbstractTransaction, global
         global_configuration=global_configuration,
     )
     if conversion.rate is None:
-        raise RP2RuntimeError(f"Conversion rate for {transaction.timestamp_value}:{from_fiat}->{to_fiat} not found on any pair converter plugin")
+        # Log the issue instead of raising an error
+        LOGGER.warning(
+            f"Conversion rate for {transaction.timestamp_value}:{from_fiat}->{to_fiat} not found on any pair converter plugin. "
+            f"Using original transaction values."
+        )
+        # Return the original transaction without conversion
+        return transaction
 
     init_parameters: Dict[str, Any] = transaction.constructor_parameter_dictionary
     notes: str = f"Fiat conversion {from_fiat}->{to_fiat} using {conversion.pair_converter.name()} plugin; {transaction.notes if transaction.notes else ''}"

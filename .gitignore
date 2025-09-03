@@ -25,3 +25,6 @@ __pycache__/
 src/*.egg-info/
 .venv/
 .vscode/
+venv/
+config/dali_config_binance_api.ini
+binance_output/
