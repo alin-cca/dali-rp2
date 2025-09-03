@@ -423,8 +423,19 @@ class AbstractCcxtPairConverterPlugin(AbstractPairConverterPlugin):
                     close=ZERO,
                     volume=ZERO,
                 )
-            raise RP2RuntimeError(
-                f"The asset {from_asset}({from_asset_vertex}) or {to_asset}({to_asset_vertex}) is missing from {exchange} graph for {timestamp}"
+            # Log a warning instead of raising an error
+            self._logger.warning(
+                f"The asset {from_asset}({from_asset_vertex}) or {to_asset}({to_asset_vertex}) is missing from {exchange} graph for {timestamp}. Assigning ZERO price."
+            )
+            # Return a zero price for missing assets
+            return HistoricalBar(
+                duration=timedelta(seconds=604800),
+                timestamp=timestamp,
+                open=ZERO,
+                high=ZERO,
+                low=ZERO,
+                close=ZERO,
+                volume=ZERO,
             )
 
         pricing_path = current_graph.dijkstra(from_asset_vertex, to_asset_vertex, False)
