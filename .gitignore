@@ -28,3 +28,7 @@ src/*.egg-info/
 venv/
 config/dali_config_binance_api.ini
 binance_output/
+config/binance_config.ini
+output_bin_dummy/
+output_dummy/
+dummy_input/
