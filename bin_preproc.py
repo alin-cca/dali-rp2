@@ -107,6 +107,54 @@ def process_transaction_group(group, holder, exchange):
     # Determine the transaction type
     operation_types = {rec["Operation"] for rec in group}
     
+    # Case: Binance Convert
+    # Handle these first as they need to be processed individually, not as a group
+    if "Binance Convert" in operation_types:
+        convert_recs = [rec for rec in group if rec["Operation"] == "Binance Convert"]
+        for rec in convert_recs:
+            asset = rec["Coin"]
+            amount = float(rec["Change"])
+            
+            # Determine if this is a buy or sell based on the sign of the amount
+            if amount > 0:  # Positive = buy (IN)
+                # Create IN transaction
+                unique_id = str(uuid.uuid4().hex)
+                in_transactions.append({
+                    "unique_id": unique_id,
+                    "timestamp": iso_timestamp,
+                    "asset": asset,
+                    "exchange": exchange,
+                    "holder": holder,
+                    "transaction_type": "BUY",
+                    "spot_price": "__unknown",
+                    "crypto_in": str(amount),
+                    "crypto_fee": "0",  # Fees are not specified in Convert operations
+                    "fiat_in_no_fee": "",
+                    "fiat_in_with_fee": "",
+                    "fiat_fee": "",
+                    "notes": f"Converted to {amount} {asset}"
+                })
+            else:  # Negative = sell (OUT)
+                # Create OUT transaction
+                unique_id = str(uuid.uuid4().hex)
+                abs_amount = abs(amount)
+                out_transactions.append({
+                    "unique_id": unique_id,
+                    "timestamp": iso_timestamp,
+                    "asset": asset,
+                    "exchange": exchange,
+                    "holder": holder,
+                    "transaction_type": "SELL",
+                    "spot_price": "__unknown",
+                    "crypto_out_no_fee": str(abs_amount),
+                    "crypto_fee": "0",  # Fees are not specified in Convert operations
+                    "crypto_out_with_fee": str(abs_amount),
+                    "fiat_out_no_fee": "",
+                    "fiat_fee": "",
+                    "fiat_ticker": "",
+                    "notes": f"Converted {abs_amount} {asset}"
+                })
+    
     # Case: Deposit - categorize as intra transaction
     if "Deposit" in operation_types:
         deposit_recs = [rec for rec in group if rec["Operation"] == "Deposit"]
@@ -260,38 +308,7 @@ def process_transaction_group(group, holder, exchange):
                 "notes": f"Sold {sold_amount} {sold_asset} for {adjusted_revenue} {revenue_asset}"
             })
     
-    # Case: Token Swap/Rebranding
-    if "Token Swap - Redenomination/Rebranding" in operation_types or "Distribution" in operation_types:
-        swap_recs = [rec for rec in group if rec["Operation"] == "Token Swap - Redenomination/Rebranding"]
-        dist_recs = [rec for rec in group if rec["Operation"] == "Distribution"]
-        
-        # Check if this is a rebranding case by examining remarks
-        rebranding_pairs = []
-        for dist_rec in dist_recs:
-            remark = dist_rec.get("Remark", "")
-            if " to " in remark:
-                from_asset, to_asset = remark.split(" to ")
-                # Find matching swap transaction
-                for swap_rec in swap_recs:
-                    if swap_rec["Coin"] == from_asset:
-                        rebranding_pairs.append((from_asset, to_asset, abs(float(swap_rec["Change"]))))
-        
-        # Create INTRA transactions for each rebranding pair
-        for from_asset, to_asset, amount in rebranding_pairs:
-            unique_id = str(uuid.uuid4().hex)
-            intra_transactions.append({
-                "unique_id": unique_id,
-                "timestamp": iso_timestamp,
-                "asset": from_asset,
-                "from_exchange": exchange,
-                "from_holder": holder,
-                "to_exchange": exchange,
-                "to_holder": holder,
-                "spot_price": "__unknown",
-                "crypto_sent": str(amount),
-                "crypto_received": str(amount),
-                "notes": f"Rebranding from {from_asset} to {to_asset}"
-            })
+    # Note: Token Swap/Rebranding is now handled separately before grouping by timestamp
     
     return in_transactions, out_transactions, intra_transactions
 
@@ -347,6 +364,45 @@ def write_output_files(in_transactions, out_transactions, intra_transactions, ou
             ])
 
 
+def process_rebranding_pairs(swap_records, distribution_records, holder, exchange):
+    """Process token swap and distribution records to identify rebranding pairs."""
+    intra_transactions = []
+    
+    # Match distribution records with swap records
+    for dist_rec in distribution_records:
+        remark = dist_rec.get("Remark", "")
+        if " to " in remark:
+            # Extract old and new asset names
+            from_asset, to_asset = remark.split(" to ")
+            # Try to find matching swap record
+            for swap_rec in swap_records:
+                if swap_rec["Coin"] == from_asset:
+                    # Found a matching pair
+                    amount = abs(float(swap_rec["Change"]))
+                    # Convert timestamp to ISO8601
+                    timestamp = swap_rec["UTC_Time"]
+                    dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                    iso_timestamp = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    
+                    # Create an intra transaction for the rebranding
+                    unique_id = str(uuid.uuid4().hex)
+                    intra_transactions.append({
+                        "unique_id": unique_id,
+                        "timestamp": iso_timestamp,
+                        "asset": from_asset,
+                        "from_exchange": exchange,
+                        "from_holder": holder,
+                        "to_exchange": exchange,
+                        "to_holder": holder,
+                        "spot_price": "__unknown",
+                        "crypto_sent": str(amount),
+                        "crypto_received": str(amount),
+                        "notes": f"Rebranding from {from_asset} to {to_asset}"
+                    })
+    
+    return intra_transactions
+
+
 def main():
     """Main function to process Binance CSV and output DaLI format."""
     args = parse_arguments()
@@ -359,13 +415,32 @@ def main():
         print(f"Error reading input file: {e}", file=sys.stderr)
         return 1
     
+    # Extract token swap and distribution records for special processing
+    swap_records = [rec for rec in records if rec["Operation"] == "Token Swap - Redenomination/Rebranding"]
+    distribution_records = [rec for rec in records if rec["Operation"] == "Distribution" and " to " in rec.get("Remark", "")]
+    
+    # Process rebranding pairs across timestamps
+    rebranding_intra_txs = process_rebranding_pairs(swap_records, distribution_records, args.holder, args.exchange)
+    
+    # Filter out already processed records
+    if swap_records or distribution_records:
+        # Keep only records that aren't part of token swap/rebranding
+        filtered_records = []
+        for rec in records:
+            if rec["Operation"] == "Token Swap - Redenomination/Rebranding":
+                continue
+            if rec["Operation"] == "Distribution" and " to " in rec.get("Remark", ""):
+                continue
+            filtered_records.append(rec)
+        records = filtered_records
+    
     # Group transactions by timestamp
     grouped_transactions = group_transactions_by_time(records)
     print(f"Grouped into {len(grouped_transactions)} transaction groups")
     
     all_in_transactions = []
     all_out_transactions = []
-    all_intra_transactions = []
+    all_intra_transactions = rebranding_intra_txs
     
     # Process each transaction group
     for timestamp, group in grouped_transactions.items():

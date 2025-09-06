@@ -32,3 +32,4 @@ config/binance_config.ini
 output_bin_dummy/
 output_dummy/
 dummy_input/
+dummy_output/
